@@ -48,8 +48,6 @@ The embedding model loads when the backend starts, so the first user request doe
 Embedding and generation requests are handled asynchronously while the CPU-bound embedding model runs in a worker thread. Only two embedding operations run at once per backend process by default; other requests wait without blocking the API event loop. Set `EMBEDDING_MAX_CONCURRENCY` to tune this cap for your server. This improves how the API handles concurrent connections, but does not make model inference itself faster, and the right cap depends on available CPU and memory.
 
 The embedding endpoints (`/api/embed`, `/api/similarity`, and chunk scoring when a query is supplied) allow 60 requests per IP per minute by default. `/api/generate` allows 5 requests per IP per minute and also consumes an embedding request. Override these limits with `EMBEDDING_RATE_LIMIT_PER_MINUTE` and `LLM_RATE_LIMIT_PER_MINUTE`. The API returns `429 Too Many Requests` with a `Retry-After` header when a limit is reached. The Compose setup trusts `X-Real-IP` from its Nginx frontend; when running the API behind a different proxy, enable `TRUST_PROXY_HEADERS` only if that proxy overwrites `X-Real-IP`. Limits and the embedding concurrency cap are per process and are not shared across multiple backend replicas.
-# delta_workshops_rag
-# delta_workshops_rag
-# delta_workshops_rag
-# delta_workshops_rag
-# delta_workshops_rag
+
+# Check Out the Website
+[delta_workshops_rag](rag.deltaforce.club)
