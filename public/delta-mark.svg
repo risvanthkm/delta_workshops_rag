@@ -1,0 +1,12 @@
+<svg width="487" height="468" viewBox="0 0 487 468" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Delta Force mark</title>
+  <path d="M0.304688 393.116L13.5359 322.112L486.353 334.952L473.122 405.956L0.304688 393.116Z" fill="url(#green)"/>
+  <path d="M456.704 427.201L390.877 456.925L131.185 61.6005L197.012 31.8768L456.704 427.201Z" fill="url(#green)"/>
+  <path d="M256.971 0.679688L316.218 41.9886L109.724 467.525L50.4764 426.216L256.971 0.679688Z" fill="url(#green)"/>
+  <defs>
+    <linearGradient id="green" x1="243.329" y1="0.679687" x2="243.329" y2="467.525" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14FF00"/>
+      <stop offset="1" stop-color="#00FF75"/>
+    </linearGradient>
+  </defs>
+</svg>
