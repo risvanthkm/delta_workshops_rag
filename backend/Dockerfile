@@ -11,7 +11,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu "torch==2.7.1+cpu" \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY main.py rate_limit.py ./
+COPY main.py rate_limit.py chunking.py ./
 RUN mkdir -p /home/app/.cache/huggingface && chown -R app:app /home/app/.cache
 USER app
 

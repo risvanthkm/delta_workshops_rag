@@ -1,14 +1,23 @@
+import asyncio
+from contextlib import asynccontextmanager
 import ipaddress
 import os
 import time
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
+from starlette.concurrency import run_in_threadpool
 
+from chunking import (
+    split_by_sentence_boundaries,
+    split_fixed_size,
+    split_into_sentences,
+    split_long_sentences,
+)
 from rate_limit import (
     IpRateLimiter,
     RateLimitExceeded,
@@ -16,7 +25,16 @@ from rate_limit import (
     RateLimitStorageFull,
 )
 
-app = FastAPI(title="Delta Workshops RAG API", version="1.0.0")
+MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    await run_in_threadpool(get_model)
+    yield
+
+
+app = FastAPI(title="Delta Workshops RAG API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
@@ -24,8 +42,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 
 def positive_int_env(name: str, default: int) -> int:
@@ -46,6 +62,8 @@ TRUST_PROXY_HEADERS = env_flag("TRUST_PROXY_HEADERS")
 EMBEDDING_RATE_LIMIT = RateLimitPolicy(
     "embedding", positive_int_env("EMBEDDING_RATE_LIMIT_PER_MINUTE", 60)
 )
+EMBEDDING_MAX_CONCURRENCY = positive_int_env("EMBEDDING_MAX_CONCURRENCY", 2)
+embedding_semaphore = asyncio.Semaphore(EMBEDDING_MAX_CONCURRENCY)
 LLM_RATE_LIMIT = RateLimitPolicy(
     "llm", positive_int_env("LLM_RATE_LIMIT_PER_MINUTE", 5)
 )
@@ -103,18 +121,30 @@ def encode_texts(texts: list[str]) -> list[list[float]]:
         ) from exc
 
 
-def embed(text: str) -> list[float]:
-    return encode_texts([text])[0]
+async def encode_texts_async(texts: list[str]) -> list[list[float]]:
+    async with embedding_semaphore:
+        return await run_in_threadpool(encode_texts, texts)
 
 
-def split_into_chunks(words: list[str], chunk_size: int, overlap: int) -> list[str]:
-    step = chunk_size - overlap
-    chunks = []
-    for start in range(0, len(words), step):
-        chunks.append(" ".join(words[start : start + chunk_size]))
-        if start + chunk_size >= len(words):
-            break
-    return chunks
+async def chunk_document(
+    text: str, chunk_size: int, overlap: int, method: str
+) -> list[str]:
+    if method == "fixed_size":
+        return split_fixed_size(text, chunk_size, overlap)
+
+    sentences = split_long_sentences(split_into_sentences(text), chunk_size)
+    if method == "sentence":
+        return split_by_sentence_boundaries(sentences, chunk_size, overlap)
+
+    sentence_vectors = await encode_texts_async(sentences) if sentences else []
+    adjacent_similarities = [
+        sum(a * b for a, b in zip(sentence_vectors[index - 1], vector))
+        for index, vector in enumerate(sentence_vectors)
+        if index > 0
+    ]
+    return split_by_sentence_boundaries(
+        sentences, chunk_size, overlap, adjacent_similarities
+    )
 
 
 class ChunkRequest(BaseModel):
@@ -122,6 +152,7 @@ class ChunkRequest(BaseModel):
     chunk_size: Annotated[int, Field(ge=1, le=1000)]
     overlap: Annotated[int, Field(ge=0, le=999)]
     query: str | None = Field(default=None, min_length=1, max_length=200)
+    method: Literal["fixed_size", "sentence", "semantic"] = "fixed_size"
 
 
 class EmbedRequest(BaseModel):
@@ -139,6 +170,7 @@ class GenerateRequest(BaseModel):
     context: Annotated[str, Field(max_length=10000)]
     chunk_size: Annotated[int, Field(ge=12, le=120)] = 48
     overlap: Annotated[int, Field(ge=0, le=40)] = 10
+    chunk_method: Literal["fixed_size", "sentence", "semantic"] = "fixed_size"
 
 
 @app.get("/api/health")
@@ -147,7 +179,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/api/chunk")
-def chunk_text(request: ChunkRequest, http_request: Request) -> dict:
+async def chunk_text(request: ChunkRequest, http_request: Request) -> dict:
     if request.overlap >= request.chunk_size:
         raise HTTPException(
             status_code=422,
@@ -155,18 +187,20 @@ def chunk_text(request: ChunkRequest, http_request: Request) -> dict:
         )
 
     started = time.perf_counter()
-    words = request.text.split()
-    chunks = split_into_chunks(words, request.chunk_size, request.overlap)
-    elapsed_ms = (time.perf_counter() - started) * 1000
+    chunks = await chunk_document(
+        request.text, request.chunk_size, request.overlap, request.method
+    )
     similarities: list[float] = []
-    if request.query and chunks:
+    if request.method == "semantic" or (request.query and chunks):
         enforce_rate_limits(http_request, EMBEDDING_RATE_LIMIT)
-        vectors = encode_texts([request.query, *chunks])
+    if request.query and chunks:
+        vectors = await encode_texts_async([request.query, *chunks])
         query_vector, *chunk_vectors = vectors
         similarities = [
             round(sum(a * b for a, b in zip(query_vector, vector)), 4)
             for vector in chunk_vectors
         ]
+    elapsed_ms = (time.perf_counter() - started) * 1000
     return {
         "chunks": chunks,
         "count": len(chunks),
@@ -176,16 +210,18 @@ def chunk_text(request: ChunkRequest, http_request: Request) -> dict:
 
 
 @app.post("/api/embed")
-def create_embedding(request: EmbedRequest, http_request: Request) -> dict:
+async def create_embedding(request: EmbedRequest, http_request: Request) -> dict:
     enforce_rate_limits(http_request, EMBEDDING_RATE_LIMIT)
-    vector = embed(request.text)
+    vector = (await encode_texts_async([request.text]))[0]
     return {"vector": vector, "dimensions": len(vector), "model": MODEL_NAME}
 
 
 @app.post("/api/similarity")
-def compare_sentences(request: SimilarityRequest, http_request: Request) -> dict:
+async def compare_sentences(request: SimilarityRequest, http_request: Request) -> dict:
     enforce_rate_limits(http_request, EMBEDDING_RATE_LIMIT)
-    vector_a, vector_b = encode_texts([request.text_a, request.text_b])
+    vector_a, vector_b = await encode_texts_async(
+        [request.text_a, request.text_b]
+    )
     cosine_similarity = sum(a * b for a, b in zip(vector_a, vector_b))
     score = max(-1.0, min(1.0, cosine_similarity))
 
@@ -203,7 +239,7 @@ def compare_sentences(request: SimilarityRequest, http_request: Request) -> dict
 
 
 @app.post("/api/generate")
-def generate_answer(
+async def generate_answer(
     request: GenerateRequest, http_request: Request
 ) -> dict[str, list[str] | str]:
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -226,12 +262,15 @@ def generate_answer(
         from google import genai
         from google.genai import types
 
-        chunks = split_into_chunks(
-            request.context.split(), request.chunk_size, request.overlap
+        chunks = await chunk_document(
+            request.context,
+            request.chunk_size,
+            request.overlap,
+            request.chunk_method,
         )
 
         if chunks:
-            vectors = encode_texts([request.user_prompt, *chunks])
+            vectors = await encode_texts_async([request.user_prompt, *chunks])
             query_vector, *chunk_vectors = vectors
             ranked_chunks = sorted(
                 zip(chunks, chunk_vectors),
@@ -246,7 +285,8 @@ def generate_answer(
 
         retrieved_context = "\n\n".join(retrieved_chunks)
         client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
+        response = await run_in_threadpool(
+            client.models.generate_content,
             model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
             contents=(
                 f"Context:\n{retrieved_context}"

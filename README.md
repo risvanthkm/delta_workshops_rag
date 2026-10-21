@@ -1,6 +1,6 @@
 # Delta Workshops — RAG, hands-on
 
-A visual, hands-on introduction to retrieval-augmented generation, built with React, FastAPI, Hugging Face embeddings, and Google Gemini. The chunking lab starts with a longer sample document and compares each chunk to an editable question using cosine similarity. Tutorial and lab titles animate from a decorative vector-like placeholder into their actual headings as they enter view.
+A visual, hands-on introduction to retrieval-augmented generation, built with React, FastAPI, Hugging Face embeddings, and Google Gemini. The chunking lab compares fixed-size, sentence-preserving, and embedding-based semantic chunks against an editable question using cosine similarity. Semantic chunking starts a new group when adjacent sentence similarity drops below 0.45. Tutorial and lab titles animate from a decorative vector-like placeholder into their actual headings as they enter view.
 
 ## Run with Docker Compose
 
@@ -43,7 +43,11 @@ The first embedding request downloads `sentence-transformers/all-MiniLM-L6-v2`, 
 
 `GOOGLE_MODEL` defaults to `gemini-2.5-flash`. `EMBEDDING_MODEL` defaults to `sentence-transformers/all-MiniLM-L6-v2`. `PORT` changes the Compose host port (default `8080`). Typography uses **Silkscreen** for pixel-style headings, loaded from Google Fonts to match the supplied visual reference, with **DM Sans** for body copy and numbers.
 
-The embedding endpoints (`/api/embed`, `/api/similarity`, and chunk scoring when a query is supplied) allow 60 requests per IP per minute by default. `/api/generate` allows 5 requests per IP per minute and also consumes an embedding request. Override these limits with `EMBEDDING_RATE_LIMIT_PER_MINUTE` and `LLM_RATE_LIMIT_PER_MINUTE`. The API returns `429 Too Many Requests` with a `Retry-After` header when a limit is reached. The Compose setup trusts `X-Real-IP` from its Nginx frontend; when running the API behind a different proxy, enable `TRUST_PROXY_HEADERS` only if that proxy overwrites `X-Real-IP`. Limits are stored in the API process memory and are not shared across multiple backend replicas.
+The embedding model loads when the backend starts, so the first user request does not pay the model-download and initialization delay. The API becomes healthy after the model is ready; the first startup can take longer if the model needs to be downloaded.
+
+Embedding and generation requests are handled asynchronously while the CPU-bound embedding model runs in a worker thread. Only two embedding operations run at once per backend process by default; other requests wait without blocking the API event loop. Set `EMBEDDING_MAX_CONCURRENCY` to tune this cap for your server. This improves how the API handles concurrent connections, but does not make model inference itself faster, and the right cap depends on available CPU and memory.
+
+The embedding endpoints (`/api/embed`, `/api/similarity`, and chunk scoring when a query is supplied) allow 60 requests per IP per minute by default. `/api/generate` allows 5 requests per IP per minute and also consumes an embedding request. Override these limits with `EMBEDDING_RATE_LIMIT_PER_MINUTE` and `LLM_RATE_LIMIT_PER_MINUTE`. The API returns `429 Too Many Requests` with a `Retry-After` header when a limit is reached. The Compose setup trusts `X-Real-IP` from its Nginx frontend; when running the API behind a different proxy, enable `TRUST_PROXY_HEADERS` only if that proxy overwrites `X-Real-IP`. Limits and the embedding concurrency cap are per process and are not shared across multiple backend replicas.
 # delta_workshops_rag
 # delta_workshops_rag
 # delta_workshops_rag

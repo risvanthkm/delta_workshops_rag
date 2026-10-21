@@ -9,6 +9,7 @@ services:
       HF_HOME: /home/app/.cache/huggingface
       TRUST_PROXY_HEADERS: "true"
       EMBEDDING_RATE_LIMIT_PER_MINUTE: ${EMBEDDING_RATE_LIMIT_PER_MINUTE:-60}
+      EMBEDDING_MAX_CONCURRENCY: ${EMBEDDING_MAX_CONCURRENCY:-2}
       LLM_RATE_LIMIT_PER_MINUTE: ${LLM_RATE_LIMIT_PER_MINUTE:-5}
     volumes:
       - model-cache:/home/app/.cache/huggingface
